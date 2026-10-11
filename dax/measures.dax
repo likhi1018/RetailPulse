@@ -1,0 +1,222 @@
+// =====================================================================
+// RetailPulse | DAX measures
+// Create a blank table named _Measures (Home > Enter data > OK) and add
+// each measure to it. Display folders are shown in [brackets].
+// Currency: Brazilian reais (R$). Format money measures as "R$ #,0".
+//
+// Model relationships (all 1-to-many, single direction unless noted):
+//   DimDate[DateKey]          -> FactSales[date_key], FactOrders[date_key]
+//   DimCustomer[customer_key] -> FactSales[customer_key], FactOrders[customer_key]
+//   DimProduct[product_key]   -> FactSales[product_key]
+//   DimSeller[seller_key]     -> FactSales[seller_key]
+//   DimGeography[state_code]  -> DimCustomer[state_code]
+//   CustomerRFM[customer_key] -- DimCustomer[customer_key]  (1-to-1, both directions)
+//   CohortRetention: no relationships (stand-alone matrix table)
+// =====================================================================
+
+
+// ---------------------------------------------------------------------
+// [1 Sales]  base measures - everything else builds on these
+// ---------------------------------------------------------------------
+Total Revenue =
+SUM ( FactSales[price] )
+
+Total Freight =
+SUM ( FactSales[freight_value] )
+
+Total Orders =
+DISTINCTCOUNT ( FactSales[order_id] )
+
+Items Sold =
+COUNTROWS ( FactSales )
+
+AOV =
+DIVIDE ( [Total Revenue], [Total Orders] )
+
+Items per Order =
+DIVIDE ( [Items Sold], [Total Orders] )
+
+Freight % of Revenue =
+DIVIDE ( [Total Freight], [Total Revenue] )
+
+
+// ---------------------------------------------------------------------
+// [2 Time Intelligence]  requires DimDate marked as a date table
+// ---------------------------------------------------------------------
+Revenue PY =
+CALCULATE ( [Total Revenue], SAMEPERIODLASTYEAR ( DimDate[Date] ) )
+
+Revenue YoY % =
+DIVIDE ( [Total Revenue] - [Revenue PY], [Revenue PY] )
+
+Revenue PM =
+CALCULATE ( [Total Revenue], DATEADD ( DimDate[Date], -1, MONTH ) )
+
+Revenue MoM % =
+DIVIDE ( [Total Revenue] - [Revenue PM], [Revenue PM] )
+
+Revenue YTD =
+TOTALYTD ( [Total Revenue], DimDate[Date] )
+
+Revenue 3M Rolling Avg =
+VAR LastDate = MAX ( DimDate[Date] )
+VAR Period   = DATESINPERIOD ( DimDate[Date], LastDate, -3, MONTH )
+RETURN
+    DIVIDE ( CALCULATE ( [Total Revenue], Period ), 3 )
+
+Orders PY =
+CALCULATE ( [Total Orders], SAMEPERIODLASTYEAR ( DimDate[Date] ) )
+
+Orders YoY % =
+DIVIDE ( [Total Orders] - [Orders PY], [Orders PY] )
+
+
+// ---------------------------------------------------------------------
+// [3 Customers]
+// ---------------------------------------------------------------------
+Unique Customers =
+DISTINCTCOUNT ( FactSales[customer_key] )
+
+Repeat Customers =
+COUNTROWS (
+    FILTER (
+        VALUES ( FactSales[customer_key] ),
+        CALCULATE ( DISTINCTCOUNT ( FactSales[order_id] ) ) >= 2
+    )
+)
+
+Repeat Customer % =
+DIVIDE ( [Repeat Customers], [Unique Customers] )
+
+Revenue per Customer =
+DIVIDE ( [Total Revenue], [Unique Customers] )
+
+RFM Customers =
+COUNTROWS ( CustomerRFM )
+
+RFM Revenue =
+SUM ( CustomerRFM[monetary] )
+
+RFM Revenue Share % =
+DIVIDE ( [RFM Revenue], CALCULATE ( [RFM Revenue], ALL ( CustomerRFM[segment] ) ) )
+
+Avg Recency (days) =
+AVERAGE ( CustomerRFM[recency_days] )
+
+// Weighted retention for the cohort matrix totals / line chart
+Cohort Retention % =
+DIVIDE (
+    SUM ( CohortRetention[active_customers] ),
+    SUM ( CohortRetention[cohort_size] )
+)
+
+
+// ---------------------------------------------------------------------
+// [4 Delivery & Satisfaction]  order-level, from FactOrders
+// ---------------------------------------------------------------------
+Delivered Orders =
+CALCULATE ( COUNTROWS ( FactOrders ), FactOrders[is_delivered] = 1 )
+
+Canceled Orders =
+CALCULATE ( COUNTROWS ( FactOrders ), FactOrders[is_canceled] = 1 )
+
+Cancellation Rate % =
+DIVIDE ( [Canceled Orders], COUNTROWS ( FactOrders ) )
+
+Avg Delivery Days =
+AVERAGE ( FactOrders[delivery_days] )
+
+Late Orders =
+CALCULATE ( COUNTROWS ( FactOrders ), FactOrders[is_late] = 1 )
+
+On-Time Rate % =
+DIVIDE (
+    CALCULATE ( COUNTROWS ( FactOrders ), FactOrders[is_late] = 0 ),
+    CALCULATE ( COUNTROWS ( FactOrders ), NOT ISBLANK ( FactOrders[is_late] ) )
+)
+
+Late Rate % =
+1 - [On-Time Rate %]
+
+Avg Review Score =
+AVERAGE ( FactOrders[review_score] )
+
+Bad Review % =
+DIVIDE (
+    CALCULATE ( COUNTROWS ( FactOrders ), FactOrders[review_score] <= 2 ),
+    CALCULATE ( COUNTROWS ( FactOrders ), NOT ISBLANK ( FactOrders[review_score] ) )
+)
+
+Five Star % =
+DIVIDE (
+    CALCULATE ( COUNTROWS ( FactOrders ), FactOrders[review_score] = 5 ),
+    CALCULATE ( COUNTROWS ( FactOrders ), NOT ISBLANK ( FactOrders[review_score] ) )
+)
+
+// Review score gap between on-time and late orders (headline insight card)
+Review Gap On-Time vs Late =
+CALCULATE ( [Avg Review Score], FactOrders[is_late] = 0 )
+    - CALCULATE ( [Avg Review Score], FactOrders[is_late] = 1 )
+
+
+// ---------------------------------------------------------------------
+// [5 Ranking & Pareto]
+// ---------------------------------------------------------------------
+Category Rank =
+IF (
+    HASONEVALUE ( DimProduct[category] ),
+    RANKX ( ALL ( DimProduct[category] ), [Total Revenue], , DESC, DENSE )
+)
+
+Category Cumulative Revenue % =
+VAR CurrentRevenue = [Total Revenue]
+VAR AllCategories =
+    ADDCOLUMNS ( ALL ( DimProduct[category] ), "@Revenue", [Total Revenue] )
+VAR RunningTotal =
+    SUMX ( FILTER ( AllCategories, [@Revenue] >= CurrentRevenue ), [@Revenue] )
+RETURN
+    IF ( HASONEVALUE ( DimProduct[category] ),
+         DIVIDE ( RunningTotal, SUMX ( AllCategories, [@Revenue] ) ) )
+
+Seller Rank =
+IF (
+    HASONEVALUE ( DimSeller[seller_key] ),
+    RANKX ( ALL ( DimSeller[seller_key] ), [Total Revenue], , DESC, DENSE )
+)
+
+Revenue Share of Total % =
+DIVIDE ( [Total Revenue], CALCULATE ( [Total Revenue], ALLSELECTED () ) )
+
+
+// ---------------------------------------------------------------------
+// [6 Profitability (estimated)]
+// The dataset has NO product cost. Margin is an explicit assumption,
+// controlled by a what-if parameter the viewer can change.
+// Create it: Modeling > New parameter > Numeric range
+//   Name "COGS %", min 0.40, max 0.80, increment 0.05, default 0.60
+// Power BI generates the table 'COGS %' and the measure [COGS % Value].
+// ---------------------------------------------------------------------
+Est COGS =
+[Total Revenue] * 'COGS %'[COGS % Value]
+
+Est Gross Profit =
+[Total Revenue] - [Est COGS]
+
+Est Gross Margin % =
+DIVIDE ( [Est Gross Profit], [Total Revenue] )
+
+// Contribution after the marketplace absorbs a share of freight.
+// Freight subsidy share is a second assumption (0% = customer pays all).
+Est Contribution After Freight =
+[Est Gross Profit] - [Total Freight] * 'Freight Subsidy %'[Freight Subsidy % Value]
+
+
+// ---------------------------------------------------------------------
+// [7 Labels]  dynamic titles for cards and charts
+// ---------------------------------------------------------------------
+Title Revenue Trend =
+"Revenue by month - " & FORMAT ( [Total Revenue], "R$ #,0" ) & " total"
+
+Title Late Delivery Insight =
+"Late orders score " & FORMAT ( [Review Gap On-Time vs Late], "0.0" )
+    & " stars lower than on-time orders"
