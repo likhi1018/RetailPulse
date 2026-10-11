@@ -1,0 +1,16 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Power BI temp / backup files
+*.pbix.bak
+~$*
+.pbi/localSettings.json
+.pbi/cache.abf
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
